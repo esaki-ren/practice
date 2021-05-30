@@ -1,3 +1,32 @@
+import sys
+from os import environ
+from os.path import dirname, join, expanduser
+from pathlib import Path
+
+# データセット読み込みディレクトリ 
+if "DATASET_ROOT" in environ:
+    ret  = Path(environ["DATASET_ROOT"])
+else:
+    ret = Path("~", "dataset")
+
+ret = ret.expanduser()
+
+ret.mkdir(exist_ok=True, parents=True)
+
+DATA_ROOT = join(ret, "practice")
+print("DATA_ROOT:", DATA_ROOT)
+
+#　データ保存用ディレクトリ 
+if "SAVE_ROOT" in environ:
+    ret = Path(environ["SAVE_ROOT"])
+else:
+    ret = Path("./results")
+
+ret = ret.expanduser()
+SAVE_ROOT = join(ret, "practice")
+print("SAVE_ROOT", SAVE_ROOT)
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
