@@ -13,7 +13,7 @@ ret = ret.expanduser()
 
 ret.mkdir(exist_ok=True, parents=True)
 
-DATA_ROOT = join(ret, "practice")
+DATA_ROOT = join(ret, "CommonVoice", "cv-corpus-6.1-2020-12-11", "ja")
 print("DATA_ROOT:", DATA_ROOT)
 
 #　データ保存用ディレクトリ 
@@ -23,9 +23,100 @@ else:
     ret = Path("./results")
 
 ret = ret.expanduser()
-SAVE_ROOT = join(ret, "practice")
+SAVE_ROOT = join(ret, "CommonVoice", "cv-corpus-6.1-2020-12-11", "ja")
 print("SAVE_ROOT", SAVE_ROOT)
 
+
+import random
+import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset, random_split
+import torchaudio
+from torchvision import transforms
+
+torchaudio.set_audio_backend('sox_io')  # sox_io: Linux, Mac
+
+class SpeechDataset(Dataset):
+    fs = 16000
+
+    def __init__(self, data_dir, train=True, transform=None, split_rate=0.8):
+        tsv = join(data_dir, "validated.tsv")
+        # データセットの一意性確認と正解ラベルの列挙
+        import pandas as pd
+        df = pd.read_table(tsv)
+        assert not df.path.duplicated().any()
+        # duplicated():重複した行を抽出    numpy.any():どれかがTrueだったらTrue
+        # df.path.duplicated().any():df内のpathに重複があったらTrue
+        # このpathはtsv内の要素？を指定している
+        self.classes = df.client_id.drop_duplicates().tolist()
+        # drop_duplicated():重複した行を削除
+        # client_idの重複を削除
+        self.n_classes = len(self.classes)
+
+        # データセットの準備
+        self.transform = transform
+        data_dirs = tsv.split('/')
+        # '/'で区切ったものをリストに
+        dataset = torchaudio.datasets.COMMONVOICE('/'.join(data_dirs[:-1]),
+                    tsv=data_dirs[-1])
+        # 引数のurlとversionは非推奨になった
+
+        # データセットの分割
+        n_train = int(len(dataset) * split_rate)
+        n_val = len(dataset) - n_train
+        torch.manual_seed(torch.initial_seed())     # シードの固定
+        train_dataset, val_dataset = random_split(dataset, [n_train, n_val])
+        self.dataset = train_dataset if train else val_dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        x, fs, dictionaly = self.dataset[idx]
+        # datasetはtensor(波形, fs, tsvの要素の辞書)
+        if fs != self.fs:
+            x = torchaudio.transforms.Resample(fs)(x)
+        # リサンプル
+        # MFCC等は外部でtransformとして記述
+        # ただし、推論と合わせるためにMFCCは先に済ましておく？
+        x = torchaudio(log_mels=True)(x)
+
+        if self.transform:
+            x = self.transform(x)
+        # 特徴量：音声テンソル、正解ラベル：話者IDのインデックス 
+        return x, self.classes.index(dictionary['client_id'])
+
+train_dataset = SpeechDataset(DATA_ROOT, train=True)
+val_dataset = SpeechDataset(DATA_ROOT, train=False)
+
+# 前処理の定義
+        
+
+
+
+
+SD = SpeechDataset(DATA_ROOT)
+
+        
+
+#def SpeakerML(train_dataset=None, val_dataset=None, n_classes=None, n_epoch=15,
+#                load_pretrained_state=None, test_last_hidden_layer=False, 
+#                show_progress=True, show_chart=False, save_state, **kwargs):
+""" 
+前処理、学習、検証、推論
+train_dataset：学習用データセット
+val_test_dataset：検証/テスト用データセット
+n_classes：分類クラス数
+n_epochs：学習エポック数
+load_pretrained_state：学習済みモデルを使う場合の.pthファイルパス
+test_last_hidden_layer：テストデータの推論結果に最終隠れ層を使う
+show_progress：エポックの学習状況をprintする
+show_chart：結果をグラフ表示する
+save_state：test_acc > 0.9の時のtest_loss最小更新時のstateを保存
+            （load_pretrained_stateで使う）
+"""
+# モデルの準備
 
 import torch
 import torch.nn as nn
@@ -51,7 +142,7 @@ from params import *
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
 
-from net import SpeachEmbedder, MyRNN
+""" from net import SpeachEmbedder, MyRNN
 #from net_lightning import SpeachEmbedder
 
 from make_mspec import LoadMspec
@@ -73,7 +164,7 @@ def make_stft_args(frame_period=5, fs=16000, nperseg=None, window='hann', **kwar
 
     dct["fs"] = fs
     return dct
-
+"""
 
 
 """ 
@@ -84,6 +175,7 @@ speaker_idxは話者ラベルに使用
 Tensorのlistのmspecの長さを揃える
 """
 
+""" 
 parser = get_params()
 args = parser.parse_args()
 
@@ -217,7 +309,7 @@ loss_history = train(model=model, optimizer=optimizer, datas=mspecs,
 
 torch.save(model.state_dict(), model_save_path)
 
-
+"""
 
 
 
