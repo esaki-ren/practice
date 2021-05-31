@@ -73,14 +73,15 @@ class SpeechDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        x, fs, dictionaly = self.dataset[idx]
+        x, fs, dictionary = self.dataset[idx]
         # datasetはtensor(波形, fs, tsvの要素の辞書)
         if fs != self.fs:
             x = torchaudio.transforms.Resample(fs)(x)
         # リサンプル
         # MFCC等は外部でtransformとして記述
         # ただし、推論と合わせるためにMFCCは先に済ましておく？
-        x = torchaudio(log_mels=True)(x)
+        x = torchaudio.transforms.MFCC(log_mels=True)(x)
+        # .main()を呼び出すことに注意
 
         if self.transform:
             x = self.transform(x)
@@ -89,9 +90,65 @@ class SpeechDataset(Dataset):
 
 train_dataset = SpeechDataset(DATA_ROOT, train=True)
 val_dataset = SpeechDataset(DATA_ROOT, train=False)
+# train_dataset[0][0].shape (データ数, MFCC次元, 時間サンプル)
+
+print(train_dataset[0][0].dim())
 
 # 前処理の定義
-        
+Squeeze2dTo1d = lambda x: torch.squeeze(x, -3)
+# lambda 引数：返り値
+# squeeze 次元削除（ここではデータ数の部分が削除され、2次元の画像になっている）
+
+""" 
+音声の前処理
+1. frame_period=25, hop_length=12.5で40次のMFCCに変換
+2. バッチ学習では時間長を合わせる必要がある→長さを10秒（12.5ms*800）に揃える
+（ほどんどの音声は10秒未満であるから対応可能、足りない場合は音声を繰り返してパディング）
+3. ランダムな時間位置からランダムに2~4秒切り出す（切り出し時間位置を変えることでデータ拡張）
+4. 拡大縮小して3秒に揃える（音の高低を変えずに時間軸方向を拡大縮小し、ピッチ変更によるデータの拡張）
+"""
+
+class CircularPad1dCrop:
+    # 最後の1次元を指定サイズにCrop
+    # 長さが足りない時はCircularPad（同じものを繰り返すパディング？）
+    # 音声データの時間方向の長さを揃える
+    def __init__(self, size):
+        self.size = size
+    def __call__(self, x):
+        print(self.size, x.size[-1])
+        n_repeat = self.size // x.size()[-1] + 1
+        repeat_sizes = ((1, ) * (x.dim() - 1) + (n_repeat,))
+        # 二次元形状でリピート回数を設定
+        out = x.repeat(*repeat_sizes).clone()
+        return out.narrow(-1, 0, self.size)
+        # [tensor].narrow(dim, index, size)
+        # テンソル内部のある次元のある部分を切り取って返す
+        # dim:切り取る次元（行列なら、行方向で切るか(1)、列方向で切るか(2)）
+        # index:切り取る部分の始点
+        # size:切り取るサイズ
+
+# 800（10秒）、320（4秒）、240（3秒）
+train_transform = transforms.Compose([CircularPad1dCrop(800), transforms.RandomCrop((40, random.randint(160, 320))),
+                                      transforms.Resize((40, 240)), Squeeze2dTo1d])
+test_transform = transforms.Compose([CircularPad1dCrop(800), Squeeze2dTo1d])
+
+# 学習・テストデータの準備
+batch_size = 32
+
+if train_dataset:
+    train_dataset.transform = train_transform  # transformをセット
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+else:
+    n_epochs = 0    # 学習データがない時は回さない
+
+val_test_dataset=None
+
+if val_test_dataset:
+    test_dataset.transform = test_transform  # transformsをセット
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
+
+#train_transform = transforms.Compose([])
+
 
 
 
