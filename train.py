@@ -14,7 +14,7 @@ ret = ret.expanduser()
 ret.mkdir(exist_ok=True, parents=True)
 
 DATA_ROOT = join(ret, "CommonVoice", "cv-corpus-6.1-2020-12-11", "ja")
-print("DATA_ROOT:", DATA_ROOT)
+#print("DATA_ROOT:", DATA_ROOT)
 
 #　データ保存用ディレクトリ 
 if "SAVE_ROOT" in environ:
@@ -24,7 +24,7 @@ else:
 
 ret = ret.expanduser()
 SAVE_ROOT = join(ret, "CommonVoice", "cv-corpus-6.1-2020-12-11", "ja")
-print("SAVE_ROOT", SAVE_ROOT)
+#print("SAVE_ROOT", SAVE_ROOT)
 
 
 import random
@@ -89,10 +89,10 @@ class SpeechDataset(Dataset):
         return x, self.classes.index(dictionary['client_id'])
 
 train_dataset = SpeechDataset(DATA_ROOT, train=True)
-val_dataset = SpeechDataset(DATA_ROOT, train=False)
+val_test_dataset = SpeechDataset(DATA_ROOT, train=False)
 # train_dataset[0][0].shape (データ数, MFCC次元, 時間サンプル)
 
-print(train_dataset[0][0].dim())
+#print(train_dataset[0][0].dim())
 
 # 前処理の定義
 Squeeze2dTo1d = lambda x: torch.squeeze(x, -3)
@@ -115,7 +115,7 @@ class CircularPad1dCrop:
     def __init__(self, size):
         self.size = size
     def __call__(self, x):
-        print(self.size, x.size[-1])
+        #print(self.size, x.size()[-1])
         n_repeat = self.size // x.size()[-1] + 1
         repeat_sizes = ((1, ) * (x.dim() - 1) + (n_repeat,))
         # 二次元形状でリピート回数を設定
@@ -130,7 +130,7 @@ class CircularPad1dCrop:
 # 800（10秒）、320（4秒）、240（3秒）
 train_transform = transforms.Compose([CircularPad1dCrop(800), transforms.RandomCrop((40, random.randint(160, 320))),
                                       transforms.Resize((40, 240)), Squeeze2dTo1d])
-test_transform = transforms.Compose([CircularPad1dCrop(800), Squeeze2dTo1d])
+test_transform = transforms.Compose([CircularPad1dCrop(240), Squeeze2dTo1d])
 
 # 学習・テストデータの準備
 batch_size = 32
@@ -141,25 +141,47 @@ if train_dataset:
 else:
     n_epochs = 0    # 学習データがない時は回さない
 
-val_test_dataset=None
-
 if val_test_dataset:
-    test_dataset.transform = test_transform  # transformsをセット
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
+    val_test_dataset.transform = test_transform  # transformsをセット
+    val_test_dataloader = DataLoader(val_test_dataset, batch_size=batch_size, shuffle=True)
 
-#train_transform = transforms.Compose([])
+# 学習モデル（1dCNN）
+class SpeakerNet(nn.Module):
+    def __init__(self, n_classes):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.BatchNorm1d(40),
+            nn.Conv1d(40, 128, kernel_size=5, padding=2),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool1d(kernel_size=2),
+            nn.Conv1d(128, 128, kernel_size=3, padding=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool1d(kernel_size=2),
+            nn.Conv1d(128, 128, kernel_size=3, padding=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool1d(kernel_size=2),
+            nn.Conv1d(128, 64, kernel_size=3, padding=1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+        )
+        self.fc = nn.Sequential(
+            nn.Linear(30*64, 1024),
+            nn.BatchNorm1d(1024),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(1024, n_classes),
+        )
 
+    def forward(self, x):
+        x = self.conv(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
 
-
-
-
-SD = SpeechDataset(DATA_ROOT)
-
-        
-
-#def SpeakerML(train_dataset=None, val_dataset=None, n_classes=None, n_epoch=15,
-#                load_pretrained_state=None, test_last_hidden_layer=False, 
-#                show_progress=True, show_chart=False, save_state, **kwargs):
 """ 
 前処理、学習、検証、推論
 train_dataset：学習用データセット
@@ -173,7 +195,117 @@ show_chart：結果をグラフ表示する
 save_state：test_acc > 0.9の時のtest_loss最小更新時のstateを保存
             （load_pretrained_stateで使う）
 """
+
 # モデルの準備
+n_classes = None
+
+if not n_classes:
+    assert train_dataset, 'train_dataset or n_classes must be a valid'
+    n_classes = train_dataset.n_classes
+
+model = SpeakerNet(n_classes)
+
+load_pretrained_state = None
+
+if load_pretrained_state:
+    model.load_state_dict(torch.load(load_pretrained_state))
+
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters())
+
+# 学習
+n_epochs = 50
+show_progress = True
+save_state = False
+show_chart = False
+test_last_hidden_layer=False
+
+losses = []
+accs = []
+val_losses = []
+val_accs = []
+
+for epoch in range(n_epochs):
+    # 学習ループ
+    running_loss = 0.0
+    running_acc = 0.0
+
+    for x_train, y_train in train_dataloader:
+        optimizer.zero_grad()
+        #print(x_train.size())
+        y_pred = model(x_train)
+        loss = criterion(y_pred, y_train)
+        loss.backward()
+        running_loss += loss.item()
+        pred = torch.argmax(y_pred, dim=1)
+        #print(pred.eq(y_train))
+        running_acc += torch.mean(pred.eq(y_train).float())
+        optimizer.step()
+    running_loss /= len(train_dataloader)
+    running_acc /= len(train_dataloader)
+    losses.append(running_loss)
+    accs.append(running_acc)
+
+    # 検証ループ
+    val_running_loss = 0.0
+    val_running_acc = 0.0
+
+    for val_test in val_test_dataloader:
+        if not(type(val_test) is list and len(val_test) == 2):
+            break
+        x_val, y_val = val_test
+        y_pred = model(x_val)
+        val_loss = criterion(y_pred, y_val)
+        val_running_loss += val_loss.item()
+        pred = torch.argmax(y_pred, dim=1)
+        val_running_acc += torch.mean(pred.eq(y_val).float())
+        optimizer.step()
+    val_running_loss /= len(val_test_dataloader)
+    val_running_acc /= len(val_test_dataloader)
+    can_save = (val_running_acc > 0.9 and
+                val_running_loss < min(val_losses))
+    val_losses.append(val_running_loss)
+    val_accs.append(val_running_acc)
+
+    if show_progress:
+        print(f'epoch:{epoch}, loss:{running_loss:.3f},'
+              f'acc:{running_acc:.3f}, val_loss:{val_running_loss:.3f},'
+              f'val_acc:{val_running_acc:.3f}, can_save:{can_save}')
+    
+    # セーブ
+    if save_state and can_save:
+        torch.save(model.state_dict(), f'model/0001-epoch{epoch:02}.pth')
+        # f''：format、{引数:02}だと前に引数に0を2つつけたものが入る
+
+    # グラフ
+    if n_epochs > 0 and show_chart:
+        fig, ax = plt.subplots(2)
+        # plt.subplots:figure()+add.subplotのようなもの
+
+        ax[0].plot(losses, label='train loss')
+        ax[0].plot(val_losses, label='val loss')
+        ax[0].legend()  # 凡例
+        ax[1].plot(losses, label='train loss')
+        ax[1].plot(val_losses, label='val loss')
+        ax[1].legend()
+        plt.show()
+
+    # 推論
+    if not val_test_dataset:
+        break
+    if test_last_hidden_layer:
+        model.fc = model.fc[:-1]
+    
+    y_preds = torch.Tensor()
+    
+    for val_test in val_test_dataloader:
+        x_test = val_test[0] if type(val_test) is list else val_test
+        y_pred = model.eval()(x_test)
+        if not test_last_hidden_layer:
+            y_pred = torch.argmax(y_pred, dim=1)
+        y_preds = torch.cat([y_preds, y_pred])
+
+        y_preds.detach()
 
 import torch
 import torch.nn as nn
